@@ -39,7 +39,7 @@ const (
 	objectLimit                 = 500
 )
 
-func prepareTemplate(original []byte) ([]byte, error) {
+func PrepareTemplate(original []byte) ([]byte, error) {
 	// Removing all placeholders from template.
 	// This needs to be done due to placeholders not being valid yaml
 	if isEmpty(original) {
@@ -53,7 +53,7 @@ func prepareTemplate(original []byte) ([]byte, error) {
 	return original, nil
 }
 
-func yamlToUnstructured(y []byte, uns *unstructured.Unstructured) (runtime.Object, *schema.GroupVersionKind) {
+func YamlToUnstructured(y []byte, uns *unstructured.Unstructured) (runtime.Object, *schema.GroupVersionKind) {
 	o, gvr, err := scheme.Codecs.UniversalDeserializer().Decode(y, nil, uns)
 	if err != nil {
 		log.Fatalf("Error decoding YAML: %s", err)

@@ -44,6 +44,7 @@ var ConfigSpec Spec = Spec{
 		MetricsDirectory: "collected-metrics",
 		RequestTimeout:   15 * time.Second,
 		WriteToFile:      true,
+		PreloadImages:    false,
 		Measurements:     []mtypes.Measurement{},
 		IndexerConfig: IndexerConfig{
 			Enabled:            false,

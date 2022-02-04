@@ -60,6 +60,8 @@ type GlobalConfig struct {
 	IndexerConfig IndexerConfig `yaml:"indexerConfig"`
 	// Write prometheus metrics to a file
 	WriteToFile bool `yaml:"writeToFile"`
+	// Load all images on all nodes
+	PreloadImages bool `yaml:"preloadImages"`
 	// Create tarball
 	CreateTarball bool `yaml:"createTarball"`
 	// Directory to save metrics files in

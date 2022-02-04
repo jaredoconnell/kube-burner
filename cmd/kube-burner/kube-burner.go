@@ -15,7 +15,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -30,10 +32,16 @@ import (
 	"github.com/cloud-bulldozer/kube-burner/pkg/indexers"
 	"github.com/cloud-bulldozer/kube-burner/pkg/measurements"
 	"github.com/cloud-bulldozer/kube-burner/pkg/prometheus"
+
 	"github.com/cloud-bulldozer/kube-burner/pkg/util"
 
 	uid "github.com/satori/go.uuid"
 	"github.com/spf13/cobra"
+	v1 "k8s.io/api/core/v1"
+	v1beta1ext "k8s.io/api/extensions/v1beta1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
@@ -128,6 +136,7 @@ func initCmd() *cobra.Command {
 					}
 				}
 			}
+			preloadImages()
 			steps(uuid, prometheusClient, alertM)
 		},
 	}
@@ -392,6 +401,130 @@ func steps(uuid string, p *prometheus.Prometheus, alertM *alerting.AlertManager)
 	log.Infof("Finished execution with UUID: %s", uuid)
 	log.Info("👋 Exiting kube-burner")
 	os.Exit(rc)
+}
+
+func getUsedImagesFromConfig() []string {
+	images := map[string]bool{}
+
+	// Loop through all jobs, and for each job, render the template,
+	for _, job := range config.ConfigSpec.Jobs {
+		for _, o := range job.Objects {
+			if o.ObjectTemplate != "" {
+				// Need to render the vars, as sometimes the vars have the image
+				// Processing template
+				templateData := map[string]interface{}{
+					burner.JobName:      "pre-pull",
+					burner.JobIteration: "-1",
+					burner.JobUUID:      "n/a",
+					burner.Replica:      "-1",
+					"JOB_ITERATIONS":    "-1",
+				}
+				for k, v := range o.InputVars {
+					templateData[k] = v
+				}
+
+				f, err := util.ReadConfig(o.ObjectTemplate)
+				if err != nil {
+					log.Fatalf("Error reading template %s: %s", o.ObjectTemplate, err)
+				}
+				t, err := ioutil.ReadAll(f)
+				if err != nil {
+					log.Fatalf("Error reading template %s: %s", o.ObjectTemplate, err)
+				}
+				// Deserialize YAML
+				uns := &unstructured.Unstructured{}
+				renderedObj, err := util.RenderTemplate(t, templateData, util.MissingKeyError)
+				if err != nil {
+					log.Fatalf("Template error in %s: %s", o.ObjectTemplate, err)
+				}
+				burner.YamlToUnstructured(renderedObj, uns)
+
+				// and read all "image" fields. Add them to the set.
+				// Images can be at:
+				// if deployment: spec.template.spec.containers[index].image
+				// or if ImageStream spec.dockerImageRepository
+				spec, found, err := unstructured.NestedMap(uns.Object, "spec")
+				if !found || err != nil {
+					continue
+				}
+				dockerImageRepo, found, err := unstructured.NestedString(spec, "dockerImageRepository")
+				if err == nil && found {
+					images[dockerImageRepo] = true
+				}
+				specContainers, found, err := unstructured.NestedSlice(spec, "containers")
+				if err == nil && found {
+
+					for _, container := range specContainers {
+						image, found, err := unstructured.NestedString(container.(map[string]interface{}), "image")
+						if err == nil && found {
+							images[image] = true
+						}
+					}
+				}
+
+				specTemplate, found, err := unstructured.NestedMap(spec, "template")
+				if !found || err != nil {
+					continue
+				}
+				specTemplateSpec, found, err := unstructured.NestedMap(specTemplate, "spec")
+				if !found || err != nil {
+					continue
+				}
+				specTemplateContainers, found, err := unstructured.NestedSlice(specTemplateSpec, "containers")
+				if !found || err != nil {
+					continue
+				}
+				for _, container := range specTemplateContainers {
+					image, found, err := unstructured.NestedString(container.(map[string]interface{}), "image")
+					if err == nil && found {
+						images[image] = true
+					}
+				}
+
+			}
+		}
+	}
+
+	keys := make([]string, len(images))
+
+	i := 0
+	for k := range images {
+		keys[i] = k
+		i++
+	}
+	return keys
+}
+
+func preloadImages() {
+	if !config.ConfigSpec.GlobalConfig.PreloadImages {
+		return
+	}
+	// Go through
+	log.Infoln("Pre-loading images")
+	// Create set of all images
+
+	images := getUsedImagesFromConfig()
+
+	log.Printf("Images: %v\n", images)
+
+	// Create a daemonset with all images with their start command
+	clientSet, _, err := config.GetClientSet(0, 0)
+	if err != nil {
+		log.Warnf("Error creating clientSet: %s. Skipping image-pre-pull", err)
+	}
+
+	daemonsetClient := clientSet.ExtensionsV1beta1().DaemonSets("kube-burner")
+	daemonset := v1beta1ext.DaemonSet{
+		Spec: v1beta1ext.DaemonSetSpec{
+			Template: v1.PodTemplateSpec{
+				Spec: v1.PodSpec{},
+			},
+		},
+	}
+	creationOptions := metav1.CreateOptions{}
+	daemonsetClient.Create(context.TODO(), &daemonset, creationOptions)
+
+	// set to sleep for a bit.
 }
 
 // executes rootCmd
